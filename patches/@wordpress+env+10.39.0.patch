@@ -1,0 +1,59 @@
+diff --git a/node_modules/@wordpress/env/lib/runtime/docker/get-host-user.js b/node_modules/@wordpress/env/lib/runtime/docker/get-host-user.js
+index 79104fa..18bee45 100644
+--- a/node_modules/@wordpress/env/lib/runtime/docker/get-host-user.js
++++ b/node_modules/@wordpress/env/lib/runtime/docker/get-host-user.js
+@@ -4,6 +4,23 @@
+  */
+ const os = require( 'os' );
+ 
++/**
++ * Linux user/group names in Docker RUN lines must be a single shell word.
++ * Windows display names (e.g. "kazuki shibata") break groupadd/useradd and leave
++ * no home dir, so Composer tries to use /.composer and fails.
++ *
++ * @param {string} username Raw username from os.userInfo().
++ * @return {string} Safe name for use in Dockerfile and /home/<name>.
++ */
++function sanitizeDockerUsername( username ) {
++	const cleaned = String( username )
++		.replace( /\\/g, '_' )
++		.replace( /[^a-zA-Z0-9_-]/g, '_' )
++		.replace( /_+/g, '_' )
++		.replace( /^_+|_+$/g, '' );
++	return cleaned.length > 0 ? cleaned : 'wp-env-user';
++}
++
+ /**
+  * Gets information about the host user.
+  *
+@@ -19,7 +36,7 @@ module.exports = function getHostUser() {
+ 	const gid = ( hostUser.gid === -1 ? 1000 : hostUser.gid ).toString();
+ 
+ 	return {
+-		name: hostUser.username,
++		name: sanitizeDockerUsername( hostUser.username ),
+ 		uid,
+ 		gid,
+ 		fullUser: uid + ':' + gid,
+diff --git a/node_modules/@wordpress/env/lib/wordpress.js b/node_modules/@wordpress/env/lib/wordpress.js
+index 4fecab3..b03ce00 100644
+--- a/node_modules/@wordpress/env/lib/wordpress.js
++++ b/node_modules/@wordpress/env/lib/wordpress.js
+@@ -60,7 +60,16 @@ async function canAccessWPORG() {
+ 	if ( IS_OFFLINE !== undefined ) {
+ 		return IS_OFFLINE;
+ 	}
+-	IS_OFFLINE = !! ( await dns.resolve( 'WordPress.org' ).catch( () => {} ) );
++	const hasDnsAccess = !! ( await dns.resolve( 'WordPress.org' ).catch( () => {} ) );
++	if ( hasDnsAccess ) {
++		IS_OFFLINE = true;
++		return IS_OFFLINE;
++	}
++	// Some environments block direct DNS queries from Node while HTTPS works.
++	// Fall back to a lightweight request to avoid false offline detection.
++	IS_OFFLINE = await got( 'https://api.wordpress.org/core/stable-check/1.0/' )
++		.then( () => true )
++		.catch( () => false );
+ 	return IS_OFFLINE;
+ }
+ 
